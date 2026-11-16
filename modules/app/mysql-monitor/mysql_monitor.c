@@ -1068,19 +1068,12 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_completion___local *
 }
 
 // 5. Worker Thread CPU Profiling
-struct sched_stat_runtime_args {
-    unsigned short common_type;
-    unsigned char common_flags;
-    unsigned char common_preempt_count;
-    int common_pid;
-    char comm[16];
-    int pid;
+struct trace_event_raw_sched_stat_runtime___local {
     u64 runtime;
-    u64 vruntime;
-};
+} __attribute__((preserve_access_index));
 
 SEC("tracepoint/sched/sched_stat_runtime")
-int trace_sched_stat_runtime(struct sched_stat_runtime_args *ctx) {
+int trace_sched_stat_runtime(struct trace_event_raw_sched_stat_runtime___local *ctx) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid >> 32;
 
@@ -1101,7 +1094,8 @@ int trace_sched_stat_runtime(struct sched_stat_runtime_args *ctx) {
         bpf_get_current_comm(key.title, sizeof(key.title));
     }
 
-    u64 runtime = ctx->runtime;
+    u64 runtime = 0;
+    bpf_core_read(&runtime, sizeof(runtime), &ctx->runtime);
     if (runtime == 0) runtime = 1000000;
 
     struct cpu_stat_t *cs = bpf_map_lookup_elem(&cpu_stats, &key);

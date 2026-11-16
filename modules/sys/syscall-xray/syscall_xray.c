@@ -421,7 +421,7 @@ static __always_inline void update_syscall_stats(const char *sys_name, u64 delta
 static __always_inline void emit_syscall_event(
     u32 pid, u32 tid, const char *comm, u32 syscall_id, const char *sys_name,
     u32 daddr, u16 dport, u16 err_code, const char *err_name,
-    u64 duration_us, const char *target_str
+    u64 duration_us, const char *target_buf_128
 ) {
     struct syscall_event_t *e = bpf_ringbuf_reserve(&syscall_events, sizeof(*e), 0);
     if (!e) return;
@@ -442,8 +442,9 @@ static __always_inline void emit_syscall_event(
     __builtin_memcpy(e->errno_name, err_name, 16);
     e->duration_us = duration_us;
     populate_severity(err_code, duration_us, e->level);
-    if (target_str && target_str[0] != '\0') {
-        __builtin_memcpy(e->target, target_str, sizeof(e->target));
+    if (target_buf_128) {
+        // target_buf_128 must point to a >= 128-byte buffer (e.g. spec_arg_t.target), never a short .rodata string literal.
+        __builtin_memcpy(e->target, target_buf_128, sizeof(e->target));
         e->target[sizeof(e->target) - 1] = '\0';
     }
 
@@ -479,7 +480,7 @@ static __always_inline int handle_openat_enter(const char *filename, u16 kind) {
     return 0;
 }
 
-static __always_inline int handle_spec_exit(long ret, u32 syscall_id, const char *fallback_target) {
+static __always_inline int handle_spec_exit(long ret, u32 syscall_id) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid >> 32;
     u32 tid = (u32)pid_tgid;
@@ -520,8 +521,7 @@ static __always_inline int handle_spec_exit(long ret, u32 syscall_id, const char
         if (!is_eprobe_comm(comm)) {
             char sys_name[20] = {0};
             resolve_syscall_name(syscall_id, sys_name);
-            const char *tgt = (arg->target[0] != '\0') ? arg->target : fallback_target;
-            emit_syscall_event(pid, tid, comm, syscall_id, sys_name, daddr, dport, err_code, err_name, duration_us, tgt);
+            emit_syscall_event(pid, tid, comm, syscall_id, sys_name, daddr, dport, err_code, err_name, duration_us, arg->target);
         }
     }
 
@@ -537,7 +537,7 @@ int trace_sys_enter_openat(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_openat")
 int trace_sys_exit_openat(struct trace_event_raw_sys_exit *ctx) {
-    return handle_spec_exit(ctx->ret, SYS_NR_OPENAT, "");
+    return handle_spec_exit(ctx->ret, SYS_NR_OPENAT);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat2")
@@ -548,7 +548,7 @@ int trace_sys_enter_openat2(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_openat2")
 int trace_sys_exit_openat2(struct trace_event_raw_sys_exit *ctx) {
-    return handle_spec_exit(ctx->ret, SYS_NR_OPENAT2, "");
+    return handle_spec_exit(ctx->ret, SYS_NR_OPENAT2);
 }
 
 SEC("tracepoint/syscalls/sys_enter_connect")
@@ -569,6 +569,7 @@ int trace_sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
     __builtin_memset(&sc->spec, 0, sizeof(sc->spec));
     sc->spec.start_ns = bpf_ktime_get_ns();
     sc->spec.kind = SPEC_KIND_CONNECT;
+    SET_LIT(sc->spec.target, "socket");
 
     const void *uservaddr = (const void *)ctx->args[1];
     u32 addrlen = (u32)ctx->args[2];
@@ -595,8 +596,6 @@ int trace_sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
                 if (sc->spec.target[0] == '\0') {
                     SET_LIT(sc->spec.target, "unix:abstract");
                 }
-            } else {
-                SET_LIT(sc->spec.target, "socket");
             }
         }
     }
@@ -607,7 +606,7 @@ int trace_sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_connect")
 int trace_sys_exit_connect(struct trace_event_raw_sys_exit *ctx) {
-    return handle_spec_exit(ctx->ret, SYS_NR_CONNECT, "socket");
+    return handle_spec_exit(ctx->ret, SYS_NR_CONNECT);
 }
 
 // -----------------------------------------------------------------------------
@@ -702,7 +701,7 @@ int raw_trace_sys_exit(struct bpf_raw_tracepoint_args *ctx) {
     }
 
     if (should_emit) {
-        emit_syscall_event(pid, tid, comm, syscall_id, sys_name, 0, 0, err_code, err_name, duration_us, "");
+        emit_syscall_event(pid, tid, comm, syscall_id, sys_name, 0, 0, err_code, err_name, duration_us, NULL);
     }
 
     return 0;

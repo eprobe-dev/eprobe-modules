@@ -1,7 +1,7 @@
 name: sys/syscall-xray
-version: 1.0.0
+version: 1.0.1
 author: eprobe-core-team
-sha256: 58e39aeea7e24399d8df37b17ee59d2e1f9e7caebb814eafe7efa93954f8bdde
+sha256: 3883530f6475e933565180c86e6577d38c639ec34e1568116ab4f1146dba3ddb
 description: "Low-overhead eBPF syscall X-Ray replacing strace in production: captures ENOENT/EACCES/ECONNREFUSED/ETIMEDOUT syscall failures, file paths (openat/openat2), IPv4/IPv6/UNIX socket connect targets, and cumulative per-syscall call counts, errors, and nanoseconds."
 attach_points:
   - type: tracepoint

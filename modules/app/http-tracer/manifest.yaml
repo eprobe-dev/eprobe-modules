@@ -1,7 +1,7 @@
 name: app/http-tracer
-version: 2.0.24
+version: 2.0.25
 author: eprobe-core-team
-sha256: a36569027f04f3719fb460048b1a62390a2725ba7aba475332f7e2a4be2bdb82
+sha256: cd4deec5d62795346dd0f7ca100ee1b32eeb9cd09de31468101b5cad477b7e68
 description: "Real-time HTTP stream latency, RED metrics, W3C distributed tracing, virtual hosts, and web worker CPU profiling"
 attach_points:
   - type: kprobe

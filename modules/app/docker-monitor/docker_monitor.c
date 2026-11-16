@@ -438,35 +438,37 @@ static __always_inline int is_noise_fragment(const char *msg, u32 len) {
 static __always_inline void classify_log_level(char *level, unsigned int fd, const char *msg, u32 len) {
     int is_err = 0;
     int is_warn = 0;
-    u32 check_len = len < 48 ? len : 48;
+    (void)len;
 
-    #pragma clang loop unroll(disable)
+    #pragma clang loop unroll(full)
     for (int i = 0; i < 44; i++) {
-        if (i >= check_len - 3) break;
         char c0 = msg[i];
-        char c1 = msg[i+1];
-        char c2 = msg[i+2];
-        char c3 = msg[i+3];
+        char c1 = msg[i + 1];
+        char c2 = msg[i + 2];
+        if (c0 == '\0' || c1 == '\0' || c2 == '\0') break;
+        char c3 = msg[i + 3];
 
         if ((c0 == 'E' || c0 == 'e') && (c1 == 'R' || c1 == 'r') && (c2 == 'R' || c2 == 'r')) {
             is_err = 1;
             break;
         }
-        if ((c0 == 'F' || c0 == 'f') && (c1 == 'A' || c1 == 'a') && (c2 == 'I' || c2 == 'i') && (c3 == 'L' || c3 == 'l')) {
-            is_err = 1;
-            break;
-        }
-        if ((c0 == 'F' || c0 == 'f') && (c1 == 'A' || c1 == 'a') && (c2 == 'T' || c2 == 't') && (c3 == 'A' || c3 == 'a')) {
-            is_err = 1;
-            break;
-        }
-        if ((c0 == 'C' || c0 == 'c') && (c1 == 'R' || c1 == 'r') && (c2 == 'I' || c2 == 'i') && (c3 == 'T' || c3 == 't')) {
-            is_err = 1;
-            break;
-        }
-        if ((c0 == 'W' || c0 == 'w') && (c1 == 'A' || c1 == 'a') && (c2 == 'R' || c2 == 'r') && (c3 == 'N' || c3 == 'n')) {
-            is_warn = 1;
-            break;
+        if (c3 != '\0') {
+            if ((c0 == 'F' || c0 == 'f') && (c1 == 'A' || c1 == 'a') && (c2 == 'I' || c2 == 'i') && (c3 == 'L' || c3 == 'l')) {
+                is_err = 1;
+                break;
+            }
+            if ((c0 == 'F' || c0 == 'f') && (c1 == 'A' || c1 == 'a') && (c2 == 'T' || c2 == 't') && (c3 == 'A' || c3 == 'a')) {
+                is_err = 1;
+                break;
+            }
+            if ((c0 == 'C' || c0 == 'c') && (c1 == 'R' || c1 == 'r') && (c2 == 'I' || c2 == 'i') && (c3 == 'T' || c3 == 't')) {
+                is_err = 1;
+                break;
+            }
+            if ((c0 == 'W' || c0 == 'w') && (c1 == 'A' || c1 == 'a') && (c2 == 'R' || c2 == 'r') && (c3 == 'N' || c3 == 'n')) {
+                is_warn = 1;
+                break;
+            }
         }
     }
 
@@ -1149,19 +1151,12 @@ int trace_mm_page_free(void *ctx) {
     return 0;
 }
 
-struct sched_stat_runtime_args {
-    unsigned short common_type;
-    unsigned char common_flags;
-    unsigned char common_preempt_count;
-    int common_pid;
-    char comm[16];
-    int pid;
+struct trace_event_raw_sched_stat_runtime___local {
     u64 runtime;
-    u64 vruntime;
-};
+} __attribute__((preserve_access_index));
 
 SEC("tracepoint/sched/sched_stat_runtime")
-int trace_sched_stat_runtime(struct sched_stat_runtime_args *ctx) {
+int trace_sched_stat_runtime(struct trace_event_raw_sched_stat_runtime___local *ctx) {
     // PID namespace guard: reject host-level processes
     if (!is_container_context()) {
         return 0;
@@ -1181,7 +1176,8 @@ int trace_sched_stat_runtime(struct sched_stat_runtime_args *ctx) {
 
     record_container_event(container_id);
 
-    u64 runtime = ctx->runtime;
+    u64 runtime = 0;
+    bpf_core_read(&runtime, sizeof(runtime), &ctx->runtime);
     if (runtime == 0) {
         runtime = 1000000;
     }

@@ -412,19 +412,9 @@ static __always_inline int process_http_request(u32 pid, u32 ppid, const char *c
     __builtin_memcpy(req->proto, "HTTP/1.1", 8);
     __builtin_memcpy(req->host, "localhost", 10);
 
-    // 1. Extract URL Path up to 255 chars with verifier-safe bounded scan
+    // 1. Read URL Path (bounded space-clamp runs after Host: loop to avoid nested verifier state multiplication)
     path_offset &= 0x0F;
     bpf_probe_read_user_str(req->path, sizeof(req->path), buf_user + path_offset);
-    #pragma clang loop unroll(disable)
-    for (int k = 0; k < 255; k++) {
-        int idx = k & 0xFF;
-        char c = req->path[idx];
-        if (c == ' ' || c == '\r' || c == '\n' || c == '\0') {
-            req->path[idx] = '\0';
-            break;
-        }
-    }
-    req->path[255] = '\0';
 
     // 2. Bounded Host: header extraction (unroll disabled)
     #pragma clang loop unroll(disable)
@@ -467,6 +457,18 @@ static __always_inline int process_http_request(u32 pid, u32 ppid, const char *c
         struct host_stat_t init_hval = { .req_count = 1 };
         bpf_map_update_elem(&host_stats, &hkey, &init_hval, BPF_ANY);
     }
+
+    // 5. Clamp URL Path up to 255 chars (linear wrt downstream straight-line map updates)
+    #pragma clang loop unroll(disable)
+    for (int k = 0; k < 255; k++) {
+        int idx = k & 0xFF;
+        char c = req->path[idx];
+        if (c == ' ' || c == '\r' || c == '\n' || c == '\0') {
+            req->path[idx] = '\0';
+            break;
+        }
+    }
+    req->path[255] = '\0';
 
     bpf_map_update_elem(&in_flight_reqs, &pid_tgid, req, BPF_ANY);
     bpf_map_update_elem(&active_spans, &pid, &req->req_id, BPF_ANY);
@@ -956,20 +958,13 @@ int trace_sys_exit_recvfrom(struct trace_event_raw_sys_exit* ctx) {
     return 0;
 }
 
-struct sched_stat_runtime_args {
-    unsigned short common_type;
-    unsigned char common_flags;
-    unsigned char common_preempt_count;
-    int common_pid;
-    char comm[16];
-    int pid;
+struct trace_event_raw_sched_stat_runtime___local {
     u64 runtime;
-    u64 vruntime;
-};
+} __attribute__((preserve_access_index));
 
 // Track web worker CPU utilization
 SEC("tracepoint/sched/sched_stat_runtime")
-int trace_sched_stat_runtime(struct sched_stat_runtime_args *ctx) {
+int trace_sched_stat_runtime(struct trace_event_raw_sched_stat_runtime___local *ctx) {
     char comm[16] = {0};
     bpf_get_current_comm(&comm, sizeof(comm));
 
@@ -983,7 +978,8 @@ int trace_sched_stat_runtime(struct sched_stat_runtime_args *ctx) {
     struct cpu_stat_key_t key = {0};
     bpf_get_current_comm(key.title, sizeof(key.title));
 
-    u64 runtime = ctx->runtime;
+    u64 runtime = 0;
+    bpf_core_read(&runtime, sizeof(runtime), &ctx->runtime);
     struct cpu_stat_t *stat = bpf_map_lookup_elem(&cpu_stats, &key);
     if (stat) {
         __sync_fetch_and_add(&stat->cpu_time_ns, runtime);

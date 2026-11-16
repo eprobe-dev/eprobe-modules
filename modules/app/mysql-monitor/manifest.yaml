@@ -1,5 +1,5 @@
 name: app/mysql-monitor
-version: 1.0.20
+version: 1.0.21
 author: eprobe-core-team
 description: "Comprehensive MySQL DBA observability: SQL query performance, microsecond latency histograms, deadlock & lock wait detection, InnoDB Block I/O, RED metrics, and worker thread CPU profiling"
 attach_points:
@@ -413,4 +413,4 @@ tui_hints:
               color: "#FF007F"
             - field: message
               width: 100
-sha256: e7145cdb8cd53b08aa1391d9269824b99461361f787fe44b4278bb30e9aa2ec3
+sha256: 2761276281806b6149bbcb8a68dcc5568752e835d2c99556afc1543d6f80fe8d

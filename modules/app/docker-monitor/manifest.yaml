@@ -1,7 +1,7 @@
 name: app/docker-monitor
-version: 2.4.5
+version: 2.4.6
 author: eprobe-core-team
-sha256: 912b4c4622f2e63811539ca1ce290518e1c366c6ec2a34bab266823ffab28c84
+sha256: 6ea0efd5abbed71ffce576ffd5ce4c376bb50d8b5916a57dce1068ff72f6f8d3
 description: "Full-spectrum Docker container diagnostics: process trees, decoupled OOM kills & process crashes, stdout/stderr logs, Block I/O, CPU scheduling, cgroup lifecycle, and network latency"
 attach_points:
   - type: tracepoint
