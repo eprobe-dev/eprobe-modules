@@ -1,0 +1,116 @@
+name: sec/exec-audit
+version: 2.0.1
+author: eprobe-core-team
+sha256: 510ab07dd2a057a2739ca63d5c0947348bd8bdcf75052755159028083b4ff3d5
+description: "Enterprise-grade Security & Compliance Process Execution Auditor: captures live Linux execve/execveat syscall executions, command-line arguments, root privilege escalation, loginuid identity tracking, and container namespaces across host daemons and workloads."
+attach_points:
+  - type: tracepoint
+    symbol: syscalls/sys_enter_execve
+    section: trace_sys_execve
+  - type: tracepoint
+    symbol: syscalls/sys_enter_execveat
+    section: trace_sys_execveat
+maps:
+  - name: events
+    type: ringbuf
+    event_struct: event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: uid
+        type: uint32
+      - name: loginuid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: filename
+        type: string
+        length: 256
+      - name: args
+        type: string
+        length: 256
+      - name: level
+        type: string
+        length: 8
+tui_hints:
+  pages:
+    - name: "Process Lineage & Execution Velocity"
+      panes:
+        - name: "Execution Tree"
+          type: tree
+          map_name: events
+          node_id: "pid"
+          parent_id: "ppid"
+          label_fields: ["comm", "filename"]
+          views: ["tree"]
+          position:
+            row: 0
+            col: 0
+            width: "60%"
+            height: "60%"
+          summary: "Hierarchical process execution tree (PID -> PPID). Press [Up]/[Down] to select, [Left]/[Right] to expand/collapse, [Enter] to inspect."
+        - name: "Top Executed Binaries"
+          type: top
+          map_name: events
+          aggregate_by:
+            - field: comm
+              label: "Executions"
+              type: count
+          position:
+            row: 0
+            col: 1
+            width: "40%"
+            height: "60%"
+          summary: "Top executed binaries leaderboard."
+        - name: "Execution Frequency (Rate/sec)"
+          type: sparkline
+          map_name: events
+          metric_field: "count"
+          aggregation: "rate"
+          unit: "qps"
+          time_window_sec: 60
+          position:
+            row: 1
+            col: 0
+            width: "100%"
+            height: "40%"
+          summary: "Live process creation throughput graph over rolling 60s."
+    - name: "Live Process Execution Stream"
+      panes:
+        - name: "Exec Events Stream"
+          type: stream
+          map_name: events
+          inspect_payload: "args"
+          searchable_fields: [comm, filename, args, container_id]
+          position:
+            row: 0
+            col: 0
+            width: "100%"
+            height: "100%"
+          summary: "Real-time process execution event stream with argument and identity inspection."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: ppid
+              width: 8
+            - field: uid
+              width: 6
+            - field: loginuid
+              width: 8
+            - field: comm
+              width: 15
+            - field: container_id
+              width: 14
+            - field: filename
+              width: 25
+            - field: args
+              width: 0

@@ -1,0 +1,233 @@
+name: sys/syscall-xray
+version: 1.0.0
+author: eprobe-core-team
+sha256: 58e39aeea7e24399d8df37b17ee59d2e1f9e7caebb814eafe7efa93954f8bdde
+description: "Low-overhead eBPF syscall X-Ray replacing strace in production: captures ENOENT/EACCES/ECONNREFUSED/ETIMEDOUT syscall failures, file paths (openat/openat2), IPv4/IPv6/UNIX socket connect targets, and cumulative per-syscall call counts, errors, and nanoseconds."
+attach_points:
+  - type: tracepoint
+    symbol: syscalls/sys_enter_openat
+    section: trace_sys_enter_openat
+  - type: tracepoint
+    symbol: syscalls/sys_exit_openat
+    section: trace_sys_exit_openat
+  - type: tracepoint
+    symbol: syscalls/sys_enter_openat2
+    section: trace_sys_enter_openat2
+  - type: tracepoint
+    symbol: syscalls/sys_exit_openat2
+    section: trace_sys_exit_openat2
+  - type: tracepoint
+    symbol: syscalls/sys_enter_connect
+    section: trace_sys_enter_connect
+  - type: tracepoint
+    symbol: syscalls/sys_exit_connect
+    section: trace_sys_exit_connect
+  - type: raw_tracepoint
+    symbol: sys_enter
+    section: raw_trace_sys_enter
+  - type: raw_tracepoint
+    symbol: sys_exit
+    section: raw_trace_sys_exit
+maps:
+  - name: syscall_events
+    type: ringbuf
+    event_struct: syscall_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: tid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: syscall_id
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: syscall
+        type: string
+        length: 20
+      - name: daddr
+        type: ipv4
+        format: ip
+      - name: dport
+        type: uint16
+        format: port
+      - name: errno_code
+        type: uint16
+      - name: errno_name
+        type: string
+        length: 16
+      - name: duration_us
+        type: uint64
+      - name: level
+        type: string
+        length: 8
+      - name: target
+        type: string
+        length: 128
+  - name: syscall_stats
+    type: hash
+    key_struct: syscall_stat_key_t
+    key_schema:
+      - name: syscall
+        type: string
+        length: 20
+    value_struct: syscall_stat_t
+    value_schema:
+      - name: total_ns
+        type: uint64
+      - name: call_count
+        type: uint64
+      - name: error_count
+        type: uint64
+variables:
+  - name: filter_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter syscall tracing to a specific target PID (0 = all processes)"
+  - name: errors_only
+    type: uint8
+    cli_flag: errors-only
+    description: "Emit only failed syscalls (ret < 0), suppressing slow non-error events (1: enabled, 0: disabled)"
+  - name: slow_threshold_us
+    type: uint64
+    cli_flag: slow-us
+    description: "Emit syscalls slower than threshold in microseconds (default: 10000 = 10ms)"
+  - name: include_transient
+    type: uint8
+    cli_flag: include-transient
+    description: "Include transient EAGAIN/EINPROGRESS errors in the discrete event stream (1: enabled, 0: disabled)"
+tui_hints:
+  pages:
+    - name: "Syscall Failure & Slow Stream"
+      layout: grid
+      panes:
+        - name: "Failing & Slow Syscall Rate"
+          type: sparkline
+          map_name: syscall_events
+          metric_field: count
+          aggregation: rate
+          time_window_sec: 60
+          unit: qps
+          position:
+            row: 0
+            col: 0
+            width: 50%
+            height: 35%
+          summary: "Real-time rate of failing and slow syscalls emitted across traced processes."
+        - name: "Syscall Latency Distribution"
+          type: histogram
+          map_name: syscall_events
+          histogram_field: duration_us
+          unit: us
+          buckets: [100, 500, 1000, 5000, 10000, 50000, 250000]
+          position:
+            row: 0
+            col: 1
+            width: 50%
+            height: 35%
+          summary: "Microsecond latency distribution for captured failed and slow syscalls."
+        - name: "Syscall Failure & Slow Stream"
+          type: stream
+          map_name: syscall_events
+          inspect_payload: target
+          searchable_fields: [comm, syscall, target, errno_name, container_id]
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 65%
+          summary: "Live strace-equivalent stream of failing syscalls (ENOENT, EACCES, ECONNREFUSED, ETIMEDOUT) and slow calls."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: comm
+              width: 14
+              bold: true
+            - field: container_id
+              width: 14
+            - field: syscall
+              width: 14
+              bold: true
+              color: "#00F0FF"
+            - field: target
+              width: 45
+            - field: daddr
+              width: 15
+            - field: dport
+              width: 7
+            - field: errno_name
+              width: 13
+              bold: true
+            - field: level
+              width: 8
+              bold: true
+            - field: duration_us
+              width: 12
+    - name: "Syscall Summary Leaderboard"
+      layout: grid
+      panes:
+        - name: "Top Syscalls by Cumulative Time (strace -c)"
+          type: top
+          map_name: syscall_stats
+          unit: s/s
+          aggregate_by:
+            - field: syscall
+              label: "Time Rate"
+              type: delta_rate
+              value_field: total_ns
+          position:
+            row: 0
+            col: 0
+            width: 34%
+            height: 55%
+          summary: "Syscalls ranked by cumulative kernel execution time rate (strace -c -T equivalent)."
+        - name: "Top Syscalls by Call Count"
+          type: top
+          map_name: syscall_stats
+          aggregate_by:
+            - field: syscall
+              label: "Calls"
+              type: value
+              value_field: call_count
+          position:
+            row: 0
+            col: 4
+            width: 33%
+            height: 55%
+          summary: "Syscalls ranked by cumulative invocation count captured in-kernel."
+        - name: "Top Syscalls by Error Count"
+          type: top
+          map_name: syscall_stats
+          aggregate_by:
+            - field: syscall
+              label: "Errors"
+              type: value
+              value_field: error_count
+          position:
+            row: 0
+            col: 8
+            width: 33%
+            height: 55%
+          summary: "Syscalls ranked by cumulative non-zero errno failures."
+        - name: "Top Failing Error Codes"
+          type: top
+          map_name: syscall_events
+          inspect_payload: target
+          aggregate_by:
+            - field: errno_name
+              label: "Failures"
+              type: count
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 45%
+          summary: "Breakdown of observed errno failures (ENOENT, EACCES, ECONNREFUSED, ETIMEDOUT)."

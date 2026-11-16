@@ -1,0 +1,126 @@
+name: log/stderr-capture
+version: 1.1.2
+author: eprobe-core-team
+sha256: 3c33e8a2753e7097775d5b7048cee615b0c6dac3a9d3168ce44a2255cf298e12
+description: "System-Wide Host & Container Error Diagnostic Sink: intercepts raw stderr (fd 2) and vectorized writev error output across bare-metal systemd services, CLI utilities, and container runtimes, isolating crashing daemons, error bursts, and unexpected stack traces."
+attach_points:
+  - type: tracepoint
+    symbol: syscalls/sys_enter_write
+    section: trace_sys_write
+  - type: tracepoint
+    symbol: syscalls/sys_enter_writev
+    section: trace_sys_writev
+maps:
+  - name: stderr_events
+    type: ringbuf
+    event_struct: stderr_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: uid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: level
+        type: string
+        length: 8
+      - name: len
+        type: uint32
+      - name: trunc
+        type: uint32
+      - name: payload
+        type: string
+        length: 256
+variables:
+  - name: target_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter stderr captures by a specific Process ID"
+tui_hints:
+  pages:
+    - name: "Host & Container Error Analytics"
+      panes:
+        - name: "Error Log Rate (Spikes/sec)"
+          type: sparkline
+          map_name: stderr_events
+          metric_field: "count"
+          aggregation: "rate"
+          unit: "qps"
+          time_window_sec: 60
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Live stderr error rate spikes over rolling 60s window."
+        - name: "Error Output Length"
+          type: histogram
+          map_name: stderr_events
+          histogram_field: "len"
+          unit: "bytes"
+          buckets: [16, 64, 128, 256, 512]
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Histogram distribution of stderr payload lengths."
+        - name: "Top Error Binaries"
+          type: top
+          map_name: stderr_events
+          aggregate_by:
+            - field: comm
+              label: "Error Events"
+              type: count
+          position:
+            row: 1
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Processes generating the highest frequency of stderr outputs."
+        - name: "Top Error Containers"
+          type: top
+          map_name: stderr_events
+          aggregate_by:
+            - field: container_id
+              label: "Container Errors"
+              type: count
+          position:
+            row: 1
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Containers generating the highest frequency of stderr outputs."
+    - name: "Live Stderr Console"
+      panes:
+        - name: "Stderr Events Stream"
+          type: stream
+          map_name: stderr_events
+          inspect_payload: "payload"
+          searchable_fields: [comm, payload, container_id]
+          position:
+            row: 0
+            col: 0
+            width: "100%"
+            height: "100%"
+          summary: "Real-time stream of stderr diagnostic writes with payload inspection."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: comm
+              width: 15
+            - field: container_id
+              width: 14
+            - field: level
+              width: 10
+            - field: len
+              width: 8
+            - field: payload
+              width: 0

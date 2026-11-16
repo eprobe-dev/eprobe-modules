@@ -1,0 +1,549 @@
+name: app/docker-monitor
+version: 2.4.5
+author: eprobe-core-team
+sha256: 912b4c4622f2e63811539ca1ce290518e1c366c6ec2a34bab266823ffab28c84
+description: "Full-spectrum Docker container diagnostics: process trees, decoupled OOM kills & process crashes, stdout/stderr logs, Block I/O, CPU scheduling, cgroup lifecycle, and network latency"
+attach_points:
+  - type: tracepoint
+    symbol: syscalls/sys_enter_execve
+    section: trace_sys_execve
+  - type: tracepoint
+    symbol: sched/sched_process_exit
+    section: trace_sched_process_exit
+  - type: tracepoint
+    symbol: syscalls/sys_enter_write
+    section: trace_sys_write
+  - type: tracepoint
+    symbol: syscalls/sys_enter_writev
+    section: trace_sys_writev
+  - type: kprobe
+    symbol: oom_kill_process
+    section: kprobe_oom_kill_process
+  - type: kprobe
+    symbol: tcp_v4_connect
+    section: kprobe_tcp_v4_connect
+  - type: kprobe
+    symbol: tcp_sendmsg
+    section: kprobe_tcp_sendmsg
+  - type: tracepoint
+    symbol: block/block_rq_issue
+    section: trace_block_rq_issue
+  - type: tracepoint
+    symbol: block/block_rq_complete
+    section: trace_block_rq_complete
+  - type: raw_tracepoint
+    symbol: cgroup_mkdir
+    section: raw_trace_cgroup_mkdir
+  - type: raw_tracepoint
+    symbol: cgroup_rmdir
+    section: raw_trace_cgroup_rmdir
+  - type: tracepoint
+    symbol: kmem/mm_page_alloc
+    section: trace_mm_page_alloc
+  - type: tracepoint
+    symbol: kmem/mm_page_free
+    section: trace_mm_page_free
+  - type: tracepoint
+    symbol: sched/sched_stat_runtime
+    section: trace_sched_stat_runtime
+  - type: kprobe
+    symbol: tcp_recvmsg
+    section: kprobe_tcp_recvmsg
+maps:
+  - name: proc_events
+    type: ringbuf
+    event_struct: proc_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: uid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: filename
+        type: string
+        length: 128
+      - name: container_id
+        type: string
+        length: 16
+  - name: oom_events
+    type: ringbuf
+    event_struct: oom_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: uid
+        type: uint32
+      - name: exit_code
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: reason
+        type: string
+        length: 32
+  - name: app_crash_events
+    type: ringbuf
+    event_struct: app_crash_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: uid
+        type: uint32
+      - name: exit_code
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: reason
+        type: string
+        length: 32
+  - name: log_events
+    type: ringbuf
+    event_struct: log_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+      - name: level
+        type: string
+        length: 8
+      - name: message
+        type: string
+        length: 256
+  - name: net_events
+    type: ringbuf
+    event_struct: net_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+      - name: saddr
+        type: ipv4
+        format: ip
+      - name: daddr
+        type: ipv4
+        format: ip
+      - name: sport
+        type: uint16
+        format: port
+      - name: dport
+        type: uint16
+        format: port
+      - name: latency_us
+        type: uint64
+  - name: io_events
+    type: ringbuf
+    event_struct: io_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+      - name: rwflag
+        type: string
+        length: 8
+      - name: bytes
+        type: uint32
+      - name: latency_us
+        type: uint64
+  - name: cpu_stats
+    type: hash
+    key_struct: container_key_t
+    key_schema:
+      - name: container_id
+        type: string
+        length: 16
+    value_struct: cpu_stat_t
+    value_schema:
+      - name: cpu_time_ns
+        type: uint64
+  - name: mem_stats
+    type: hash
+    key_struct: container_key_t
+    key_schema:
+      - name: container_id
+        type: string
+        length: 16
+    value_struct: mem_stat_t
+    value_schema:
+      - name: rss_bytes
+        type: uint64
+  - name: net_stats
+    type: hash
+    key_struct: container_key_t
+    key_schema:
+      - name: container_id
+        type: string
+        length: 16
+    value_struct: net_stat_t
+    value_schema:
+      - name: tx_bytes
+        type: uint64
+      - name: rx_bytes
+        type: uint64
+  - name: io_stats
+    type: hash
+    key_struct: container_key_t
+    key_schema:
+      - name: container_id
+        type: string
+        length: 16
+    value_struct: io_stat_t
+    value_schema:
+      - name: read_bytes
+        type: uint64
+      - name: write_bytes
+        type: uint64
+  - name: lifecycle_events
+    type: ringbuf
+    event_struct: lifecycle_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: container_id
+        type: string
+        length: 16
+      - name: action
+        type: string
+        length: 16
+variables:
+  - name: filter_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter events by process PID (0 for all)"
+  - name: filter_port
+    type: uint16
+    cli_flag: port
+    description: "Filter network events by target port (0 for all)"
+target_discovery:
+  candidates: ["dockerd", "containerd", "containerd-shim", "crio"]
+  version_flags: ["--version", "-v"]
+tui_hints:
+  pages:
+    - name: "Global Health & RED Metrics"
+      panes:
+        - name: "Container Event Throughput"
+          type: sparkline
+          map_name: proc_events
+          metric_field: "count"
+          aggregation: "rate"
+          time_window_sec: 60
+          unit: "qps"
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Global container request/event throughput rate (req/s)."
+        - name: "Network Latency Distribution"
+          type: histogram
+          map_name: net_events
+          histogram_field: "latency_us"
+          unit: "us"
+          buckets: [100, 500, 2000, 10000, 50000]
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "System-wide container TCP round-trip latency (us)."
+        - name: "Top OOM-Killed Containers"
+          type: top
+          map_name: oom_events
+          aggregate_by:
+            - field: container_id
+              label: "OOM Kills"
+              type: count
+          position:
+            row: 1
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Containers experiencing kernel Out-of-Memory killer terminations."
+        - name: "Top Log Events by Container"
+          type: top
+          map_name: log_events
+          aggregate_by:
+            - field: container_id
+              label: "Log Count"
+              type: count
+          position:
+            row: 1
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Containers generating the highest volume of stdout/stderr events."
+    - name: "Unified Container Inspector (Drill-Down)"
+      panes:
+        - name: "Target Container Executions"
+          type: stream
+          map_name: proc_events
+          searchable_fields: [container_id, comm]
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Execution context for investigated container."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: comm
+              width: 12
+            - field: filename
+              width: 15
+        - name: "Target Container Logs"
+          type: stream
+          map_name: log_events
+          searchable_fields: [container_id, message]
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Stdout/Stderr diagnostics for investigated container."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: level
+              width: 8
+              bold: true
+              color: "#FF007F"
+            - field: message
+              width: 150
+        - name: "Target Container Network"
+          type: stream
+          map_name: net_events
+          searchable_fields: [container_id, daddr]
+          position:
+            row: 1
+            col: 0
+            width: "100%"
+            height: "50%"
+          summary: "Egress network traffic for investigated container."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: comm
+              width: 12
+            - field: daddr
+              width: 15
+            - field: dport
+              width: 8
+            - field: latency_us
+              width: 10
+              color: "#00F0FF"
+    - name: "Container Resource & Block I/O Saturation"
+      panes:
+        - name: "Top CPU Consuming Containers"
+          type: top
+          map_name: cpu_stats
+          inspect_payload: "container_id"
+          aggregate_by:
+            - field: container_id
+              label: "CPU %"
+              type: delta_rate
+              value_field: cpu_time_ns
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "33%"
+          summary: "Containers ranked by instantaneous CPU utilization."
+        - name: "Top Memory Consuming Containers"
+          type: top
+          map_name: mem_stats
+          inspect_payload: "container_id"
+          aggregate_by:
+            - field: container_id
+              label: "RSS Bytes"
+              type: value
+              value_field: rss_bytes
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "33%"
+          summary: "Containers ranked by resident set size (page allocations minus frees)."
+        - name: "Top Network Throughput Containers"
+          type: top
+          map_name: net_stats
+          inspect_payload: "container_id"
+          aggregate_by:
+            - field: container_id
+              label: "TX B/s"
+              type: delta_rate
+              value_field: tx_bytes
+          position:
+            row: 1
+            col: 0
+            width: "50%"
+            height: "33%"
+          summary: "Containers ranked by transmitted network throughput rate (Bytes/sec)."
+        - name: "Top Disk I/O Throughput Containers"
+          type: top
+          map_name: io_stats
+          inspect_payload: "container_id"
+          aggregate_by:
+            - field: container_id
+              label: "Read B/s"
+              type: delta_rate
+              value_field: read_bytes
+          position:
+            row: 1
+            col: 1
+            width: "50%"
+            height: "33%"
+          summary: "Containers ranked by block I/O read throughput rate (Bytes/sec)."
+        - name: "Block I/O Disk Operations Stream"
+          type: stream
+          map_name: io_events
+          searchable_fields: [container_id, comm]
+          position:
+            row: 2
+            col: 0
+            width: "100%"
+            height: "34%"
+          summary: "Real-time block storage operations stream."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: comm
+              width: 12
+            - field: rwflag
+              width: 8
+            - field: bytes
+              width: 10
+            - field: latency_us
+              width: 10
+              color: "#00F0FF"
+    - name: "Process Execution & Audit"
+      panes:
+        - name: "Container Process Hierarchy Tree"
+          type: tree
+          map_name: proc_events
+          node_id: "pid"
+          parent_id: "ppid"
+          label_fields: [comm, filename, container_id]
+          badge_field: "comm"
+          views: ["tree"]
+          position:
+            row: 0
+            col: 0
+            width: "70%"
+            height: "100%"
+          summary: "Process execution tree showing parent-child relationships."
+        - name: "Container Process Crash & Failure Stream"
+          type: stream
+          map_name: app_crash_events
+          searchable_fields: [container_id, comm, reason]
+          position:
+            row: 0
+            col: 1
+            width: "30%"
+            height: "50%"
+          summary: "Real-time audit of non-zero process exits and fatal crashes."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: comm
+              width: 12
+            - field: exit_code
+              width: 8
+            - field: reason
+              width: 14
+        - name: "Container Lifecycle Audit Log"
+          type: stream
+          map_name: lifecycle_events
+          searchable_fields: [container_id, action]
+          position:
+            row: 1
+            col: 1
+            width: "30%"
+            height: "50%"
+          summary: "Chronological audit log of container cgroup create/destroy events."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: action
+              width: 16
+    - name: "Network Topology & Flow Analysis"
+      panes:
+        - name: "Global Inter-Container Connection Stream"
+          type: stream
+          map_name: net_events
+          searchable_fields: [container_id, saddr, daddr]
+          position:
+            row: 0
+            col: 0
+            width: "70%"
+            height: "100%"
+          summary: "TCP network flow events between containers."
+          columns:
+            - field: time
+              width: 10
+            - field: container_id
+              width: 14
+            - field: comm
+              width: 12
+            - field: saddr
+              width: 15
+            - field: daddr
+              width: 15
+            - field: dport
+              width: 8
+            - field: latency_us
+              width: 10
+              color: "#00F0FF"
+        - name: "Top Network Destinations"
+          type: top
+          map_name: net_events
+          inspect_payload: "daddr"
+          aggregate_by:
+            - field: daddr
+              label: "Connection Count"
+              type: count
+          position:
+            row: 0
+            col: 1
+            width: "30%"
+            height: "100%"
+          summary: "Heaviest communication links aggregated by target destination IP."

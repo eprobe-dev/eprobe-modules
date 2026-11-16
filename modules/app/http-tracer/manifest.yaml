@@ -1,0 +1,493 @@
+name: app/http-tracer
+version: 2.0.24
+author: eprobe-core-team
+sha256: a36569027f04f3719fb460048b1a62390a2725ba7aba475332f7e2a4be2bdb82
+description: "Real-time HTTP stream latency, RED metrics, W3C distributed tracing, virtual hosts, and web worker CPU profiling"
+attach_points:
+  - type: kprobe
+    symbol: tcp_sendmsg
+    section: kprobe_tcp_sendmsg
+  - type: tracepoint
+    symbol: syscalls/sys_enter_write
+    section: trace_sys_write
+  - type: tracepoint
+    symbol: syscalls/sys_enter_writev
+    section: trace_sys_writev
+  - type: tracepoint
+    symbol: syscalls/sys_enter_sendto
+    section: trace_sys_sendto
+  - type: tracepoint
+    symbol: syscalls/sys_enter_read
+    section: trace_sys_enter_read
+  - type: tracepoint
+    symbol: syscalls/sys_exit_read
+    section: trace_sys_exit_read
+  - type: tracepoint
+    symbol: syscalls/sys_enter_recvfrom
+    section: trace_sys_enter_recvfrom
+  - type: tracepoint
+    symbol: syscalls/sys_exit_recvfrom
+    section: trace_sys_exit_recvfrom
+  - type: tracepoint
+    symbol: sched/sched_stat_runtime
+    section: trace_sched_stat_runtime
+maps:
+  - name: http_events
+    type: ringbuf
+    event_struct: http_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: req_id
+        type: uint64
+      - name: parent_req_id
+        type: uint64
+      - name: saddr
+        type: ipv4
+        format: ip
+      - name: daddr
+        type: ipv4
+        format: ip
+      - name: sport
+        type: uint16
+        format: port
+      - name: dport
+        type: uint16
+        format: port
+      - name: method
+        type: string
+        length: 8
+      - name: path
+        type: string
+        length: 256
+      - name: host
+        type: string
+        length: 64
+      - name: user_agent
+        type: string
+        length: 32
+      - name: content_type
+        type: string
+        length: 32
+      - name: trace_id
+        type: string
+        length: 40
+      - name: status_code
+        type: uint16
+      - name: duration_us
+        type: uint64
+      - name: rx_bytes
+        type: uint32
+      - name: tx_bytes
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: proto
+        type: string
+        length: 8
+      - name: server_version
+        type: string
+        length: 32
+      - name: req_payload
+        type: string
+        length: 256
+      - name: resp_payload
+        type: string
+        length: 256
+  - name: slow_events
+    type: ringbuf
+    event_struct: slow_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: req_id
+        type: uint64
+      - name: saddr
+        type: ipv4
+        format: ip
+      - name: daddr
+        type: ipv4
+        format: ip
+      - name: sport
+        type: uint16
+        format: port
+      - name: dport
+        type: uint16
+        format: port
+      - name: method
+        type: string
+        length: 8
+      - name: path
+        type: string
+        length: 256
+      - name: host
+        type: string
+        length: 64
+      - name: status_code
+        type: uint16
+      - name: duration_us
+        type: uint64
+      - name: tx_bytes
+        type: uint32
+      - name: rx_bytes
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: proto
+        type: string
+        length: 8
+      - name: server_version
+        type: string
+        length: 32
+      - name: req_payload
+        type: string
+        length: 256
+      - name: resp_payload
+        type: string
+        length: 256
+  - name: error_events
+    type: ringbuf
+    event_struct: error_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: saddr
+        type: ipv4
+        format: ip
+      - name: daddr
+        type: ipv4
+        format: ip
+      - name: sport
+        type: uint16
+        format: port
+      - name: dport
+        type: uint16
+        format: port
+      - name: method
+        type: string
+        length: 8
+      - name: path
+        type: string
+        length: 256
+      - name: host
+        type: string
+        length: 64
+      - name: status_code
+        type: uint16
+      - name: duration_us
+        type: uint64
+      - name: error_msg
+        type: string
+        length: 64
+      - name: comm
+        type: string
+        length: 16
+  - name: log_events
+    type: ringbuf
+    event_struct: log_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: level
+        type: string
+        length: 8
+      - name: message
+        type: string
+        length: 256
+  - name: cpu_stats
+    type: hash
+    key_struct: cpu_stat_key_t
+    key_schema:
+      - name: title
+        type: string
+        length: 64
+    value_struct: cpu_stat_t
+    value_schema:
+      - name: cpu_time_ns
+        type: uint64
+  - name: host_stats
+    type: hash
+    key_struct: host_stat_key_t
+    key_schema:
+      - name: host
+        type: string
+        length: 64
+    value_struct: host_stat_t
+    value_schema:
+      - name: req_count
+        type: uint64
+variables:
+  - name: filter_port
+    type: uint16
+    cli_flag: port
+    description: "Filter HTTP traffic by target port (0 for all)"
+  - name: filter_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter HTTP traffic by web server process PID (0 for all)"
+  - name: slow_req_us
+    type: uint64
+    cli_flag: slow-us
+    description: "Slow HTTP request latency threshold in microseconds (default: 50000 = 50ms)"
+target_discovery:
+  candidates: ["nginx", "httpd", "apache2", "caddy", "envoy", "node", "gunicorn"]
+  version_flags: ["-v", "-V", "--version"]
+tui_hints:
+  pages:
+    - name: "HTTP RED Metrics & Overview"
+      panes:
+        - name: "HTTP Request Throughput"
+          type: sparkline
+          map_name: http_events
+          metric_field: "count"
+          aggregation: "rate"
+          time_window_sec: 60
+          unit: "qps"
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Real-time HTTP request throughput rate (req/s)."
+        - name: "HTTP Response Latency"
+          type: histogram
+          map_name: http_events
+          histogram_field: "duration_us"
+          unit: "us"
+          buckets: [100, 500, 1000, 5000, 20000, 100000]
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Histogram of HTTP round-trip response duration (us)."
+        - name: "HTTP Status Code Breakdown"
+          type: top
+          map_name: http_events
+          aggregate_by:
+            - field: status_code
+              label: "Responses"
+              type: count
+          position:
+            row: 1
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Count breakdown by HTTP response status code."
+        - name: "Top Virtual Hosts & Domains"
+          type: top
+          map_name: host_stats
+          inspect_payload: "host"
+          aggregate_by:
+            - field: host
+              label: "Total Reqs"
+              type: value
+              value_field: req_count
+          position:
+            row: 1
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Total requests aggregated by Virtual Host / Domain."
+    - name: "Live HTTP Traffic & Header Inspector"
+      panes:
+        - name: "Top Active Endpoints"
+          type: top
+          map_name: http_events
+          aggregate_by:
+            - field: path
+              label: "Requests"
+              type: count
+          position:
+            row: 0
+            col: 0
+            width: "100%"
+            height: "30%"
+          summary: "Most frequently accessed HTTP request paths."
+        - name: "Live HTTP Events Stream"
+          type: stream
+          map_name: http_events
+          searchable_fields: [method, path, host, status_code, comm, user_agent, content_type, trace_id, proto, server_version]
+          inspect_payload: "raw"
+          version_field: "server_version"
+          proto_field: "proto"
+          request_payload_field: "req_payload"
+          response_payload_field: "resp_payload"
+          position:
+            row: 1
+            col: 0
+            width: "100%"
+            height: "70%"
+          summary: "Real-time stream of HTTP requests and round-trip responses."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: comm
+              width: 12
+            - field: method
+              width: 8
+              bold: true
+              color: "#00F0FF"
+            - field: status_code
+              width: 8
+              bold: true
+              color: "#00FF66"
+            - field: duration_us
+              width: 12
+              color: "#FFA500"
+            - field: host
+              width: 20
+            - field: path
+              width: 45
+    - name: "Slow Requests & Error Diagnostics"
+      panes:
+        - name: "Slow Request Alerts (> Threshold)"
+          type: stream
+          map_name: slow_events
+          searchable_fields: [path, host, method, comm]
+          inspect_payload: "path"
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "HTTP requests taking longer than the configured latency threshold."
+          columns:
+            - field: time
+              width: 10
+            - field: method
+              width: 8
+              color: "#FF007F"
+            - field: duration_us
+              width: 12
+              bold: true
+              color: "#FF007F"
+            - field: host
+              width: 18
+            - field: path
+              width: 35
+        - name: "4xx/5xx HTTP Error Stream"
+          type: stream
+          map_name: error_events
+          searchable_fields: [path, host, status_code, error_msg]
+          inspect_payload: "path"
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "HTTP requests returning 4xx client errors or 5xx server errors."
+          columns:
+            - field: time
+              width: 10
+            - field: status_code
+              width: 8
+              bold: true
+              color: "#FF007F"
+            - field: error_msg
+              width: 20
+              bold: true
+            - field: host
+              width: 18
+            - field: path
+              width: 30
+        - name: "Top Failing Endpoints"
+          type: top
+          map_name: error_events
+          aggregate_by:
+            - field: path
+              label: "Errors"
+              type: count
+          position:
+            row: 1
+            col: 0
+            width: "100%"
+            height: "50%"
+          summary: "Endpoints generating the highest volume of 4xx/5xx HTTP errors."
+    - name: "Upstream Dependencies & Trace Hierarchy"
+      panes:
+        - name: "Distributed Trace Hierarchy"
+          type: tree
+          map_name: http_events
+          node_id: "req_id"
+          parent_id: "parent_req_id"
+          label_fields: [path, comm]
+          badge_field: "method"
+          token_field: "rx_bytes"
+          status_field: "status_code"
+          duration_field: "duration_us"
+          views: ["tree", "graph", "timeline"]
+          version_field: "server_version"
+          proto_field: "proto"
+          request_payload_field: "req_payload"
+          response_payload_field: "resp_payload"
+          position:
+            row: 0
+            col: 0
+            width: "70%"
+            height: "100%"
+          summary: "Interactive hierarchical tree of HTTP spans and downstream microservice calls."
+        - name: "Top Target Hosts"
+          type: top
+          map_name: http_events
+          inspect_payload: "host"
+          aggregate_by:
+            - field: host
+              label: "Requests"
+              type: count
+          position:
+            row: 0
+            col: 1
+            width: "30%"
+            height: "100%"
+          summary: "Top destination hosts and upstream microservices by volume."
+    - name: "Web Server Workers & Framework Logs"
+      panes:
+        - name: "Top CPU Consuming Worker Threads"
+          type: top
+          map_name: cpu_stats
+          inspect_payload: "title"
+          aggregate_by:
+            - field: title
+              label: "CPU %"
+              type: delta_rate
+              value_field: cpu_time_ns
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "100%"
+          summary: "Web server worker processes ranked by instantaneous CPU utilization."
+        - name: "Web Server & Framework Diagnostic Logs"
+          type: stream
+          map_name: log_events
+          searchable_fields: [message, comm]
+          inspect_payload: "message"
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "100%"
+          summary: "Real-time stdout/stderr log stream from web server processes."
+          columns:
+            - field: time
+              width: 10
+            - field: comm
+              width: 14
+            - field: level
+              width: 8
+              bold: true
+              color: "#FFA500"
+            - field: message
+              width: 120

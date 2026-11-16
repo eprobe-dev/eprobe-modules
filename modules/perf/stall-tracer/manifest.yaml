@@ -1,0 +1,393 @@
+name: perf/stall-tracer
+version: 1.1.7
+author: eprobe-core-team
+sha256: 4b4e56659e70e4804c1b87f1bf6e7101cc9bd574c84a130f0334d0c7f6f36293
+description: "High-resolution Off-CPU & Latency X-Ray: measures exact nanoseconds threads spend in uninterruptible sleep (D-state disk/IO/reclaim), CPU runqueue preemption starvation, and user-space mutex/rwlock futex contention, isolating worker thread bottlenecks across host processes and containers."
+attach_points:
+  - type: raw_tracepoint
+    symbol: sched_switch
+    section: raw_trace_sched_switch
+  - type: raw_tracepoint
+    symbol: sched_wakeup
+    section: raw_trace_sched_wakeup
+  - type: raw_tracepoint
+    symbol: sched_wakeup_new
+    section: raw_trace_sched_wakeup_new
+  - type: tracepoint
+    symbol: syscalls/sys_enter_futex
+    section: trace_sys_enter_futex
+  - type: tracepoint
+    symbol: syscalls/sys_exit_futex
+    section: trace_sys_exit_futex
+  - type: tracepoint
+    symbol: syscalls/sys_enter_futex_waitv
+    section: trace_sys_enter_futex_waitv
+  - type: tracepoint
+    symbol: syscalls/sys_exit_futex_waitv
+    section: trace_sys_exit_futex_waitv
+maps:
+  - name: stall_events
+    type: ringbuf
+    event_struct: stall_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: tid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: stall_type
+        type: string
+        length: 16
+      - name: duration_us
+        type: uint64
+      - name: runq_latency_us
+        type: uint64
+      - name: level
+        type: string
+        length: 8
+      - name: message
+        type: string
+        length: 128
+  - name: contention_events
+    type: ringbuf
+    event_struct: contention_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: tid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+      - name: op_type
+        type: string
+        length: 16
+      - name: lock_addr
+        type: uint64
+      - name: duration_us
+        type: uint64
+      - name: level
+        type: string
+        length: 8
+      - name: message
+        type: string
+        length: 128
+  - name: proc_stall_stats
+    type: hash
+    key_struct: proc_key_t
+    key_schema:
+      - name: comm
+        type: string
+        length: 16
+    value_struct: proc_stat_t
+    value_schema:
+      - name: total_stall_ns
+        type: uint64
+      - name: dstate_ns
+        type: uint64
+      - name: runq_latency_ns
+        type: uint64
+      - name: futex_wait_ns
+        type: uint64
+      - name: stall_count
+        type: uint32
+  - name: container_stall_stats
+    type: hash
+    key_struct: container_key_t
+    key_schema:
+      - name: container_id
+        type: string
+        length: 16
+        format: container_id
+    value_struct: container_stat_t
+    value_schema:
+      - name: total_stall_ns
+        type: uint64
+      - name: dstate_ns
+        type: uint64
+      - name: runq_latency_ns
+        type: uint64
+      - name: futex_wait_ns
+        type: uint64
+      - name: stall_count
+        type: uint32
+variables:
+  - name: threshold_ms
+    type: uint64
+    cli_flag: threshold-ms
+    description: "Minimum stall duration in milliseconds to emit a discrete spike alert event (default: 20ms)"
+  - name: filter_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter telemetry by target process PID (0 for all processes)"
+  - name: filter_stall_type
+    type: uint32
+    cli_flag: stall-type
+    description: "Filter by stall category (0: all, 1: dstate, 2: runq, 3: futex)"
+  - name: filter_kthreads
+    type: uint32
+    cli_flag: filter-kthreads
+    description: "Exclude Linux kernel worker threads (kworker, rcu) from discrete spike alerts (1: enabled, 0: disabled)"
+tui_hints:
+  pages:
+    - name: "System Off-CPU & Stall Overview"
+      layout: grid
+      panes:
+        - name: "System Stall Event Rate"
+          type: sparkline
+          map_name: stall_events
+          metric_field: count
+          aggregation: rate
+          time_window_sec: 60
+          unit: qps
+          position:
+            row: 0
+            col: 0
+            width: 50%
+            height: 50%
+          summary: "Real-time frequency of severe Off-CPU stall spikes exceeding the diagnostic threshold."
+        - name: "Stall Latency Distribution"
+          type: histogram
+          map_name: stall_events
+          histogram_field: duration_us
+          unit: us
+          buckets: [20000, 50000, 100000, 250000, 500000, 1000000, 2000000]
+          position:
+            row: 0
+            col: 1
+            width: 50%
+            height: 50%
+          summary: "Microsecond distribution of thread freeze durations across all off-CPU categories."
+        - name: "Top Stalled Processes"
+          type: top
+          map_name: proc_stall_stats
+          unit: s/s
+          aggregate_by:
+            - field: comm
+              label: "Off-CPU Rate"
+              type: delta_rate
+              value_field: total_stall_ns
+          position:
+            row: 1
+            col: 0
+            width: 34%
+            height: 50%
+          summary: "Processes ranked by instantaneous rate of off-CPU stall time (D-state, runqueue latency, futex locks)."
+        - name: "Top Stalled Containers"
+          type: top
+          map_name: container_stall_stats
+          unit: s/s
+          aggregate_by:
+            - field: container_id
+              label: "Off-CPU Rate"
+              type: delta_rate
+              value_field: total_stall_ns
+          position:
+            row: 1
+            col: 4
+            width: 33%
+            height: 50%
+          summary: "Containers ranked by cumulative off-CPU stall time rate across all member tasks."
+        - name: "Stall Cause Breakdown"
+          type: top
+          map_name: stall_events
+          aggregate_by:
+            - field: stall_type
+              label: Spikes
+              type: count
+          position:
+            row: 1
+            col: 8
+            width: 33%
+            height: 50%
+          summary: "Root cause distribution: D_STATE_IO, RUNQ_STARVE, or LOCK_FUTEX."
+    - name: "Uninterruptible Sleep & Disk Stalls (D-State)"
+      layout: grid
+      panes:
+        - name: "Top Processes Blocked in D-State"
+          type: top
+          map_name: proc_stall_stats
+          unit: s/s
+          aggregate_by:
+            - field: comm
+              label: "D-State Rate"
+              type: delta_rate
+              value_field: dstate_ns
+          position:
+            row: 0
+            col: 0
+            width: 50%
+            height: 50%
+          summary: "Processes ranked by rate of nanoseconds spent in TASK_UNINTERRUPTIBLE sleep."
+        - name: "D-State Duration Distribution"
+          type: histogram
+          map_name: stall_events
+          histogram_field: duration_us
+          unit: us
+          buckets: [20000, 50000, 100000, 250000, 500000, 1000000, 2000000]
+          position:
+            row: 0
+            col: 1
+            width: 50%
+            height: 50%
+          summary: "Latency histogram of disk I/O, paging, and kernel uninterruptible sleep freezes."
+        - name: "Severe D-State Freeze Stream"
+          type: stream
+          map_name: stall_events
+          inspect_payload: message
+          searchable_fields: [comm, message, container_id]
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 50%
+          summary: "Real-time stream of D-state freezes with duration, container, and diagnosis."
+          columns:
+            - field: time
+              width: 10
+            - field: comm
+              width: 14
+              bold: true
+              color: "#00F0FF"
+            - field: pid
+              width: 8
+            - field: tid
+              width: 8
+            - field: duration_us
+              width: 12
+              color: "#FF007F"
+            - field: container_id
+              width: 14
+            - field: message
+              width: 60
+    - name: "Mutex & Futex Lock Contention"
+      layout: grid
+      panes:
+        - name: "Top Lock Contention Victims"
+          type: top
+          map_name: contention_events
+          inspect_payload: message
+          aggregate_by:
+            - field: comm
+              label: Contention
+              type: count
+          position:
+            row: 0
+            col: 0
+            width: 50%
+            height: 50%
+          summary: "Processes spending the most time blocked waiting for user-space mutexes or rwlocks."
+        - name: "Futex Wait Latency Distribution"
+          type: histogram
+          map_name: contention_events
+          histogram_field: duration_us
+          unit: us
+          buckets: [20000, 50000, 100000, 250000, 500000, 1000000, 2000000]
+          position:
+            row: 0
+            col: 1
+            width: 50%
+            height: 50%
+          summary: "Distribution of lock acquisition delays in microseconds."
+        - name: "Lock Contention Incident Stream"
+          type: stream
+          map_name: contention_events
+          inspect_payload: message
+          searchable_fields: [comm, op_type, container_id, message]
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 50%
+          summary: "Audit log of high-latency mutex and futex contention stalls."
+          columns:
+            - field: time
+              width: 10
+            - field: comm
+              width: 14
+              bold: true
+              color: "#F59E0B"
+            - field: pid
+              width: 8
+            - field: tid
+              width: 8
+            - field: op_type
+              width: 12
+            - field: duration_us
+              width: 12
+              color: "#FF007F"
+            - field: container_id
+              width: 14
+            - field: level
+              width: 8
+              bold: true
+            - field: message
+              width: 55
+    - name: "Thread Pool Diagnostic Tree"
+      layout: grid
+      panes:
+        - name: "Process & Worker Thread Bottleneck Tree"
+          type: tree
+          map_name: stall_events
+          node_id: tid
+          parent_id: pid
+          label_fields: [tid, comm]
+          duration_field: duration_us
+          badge_field: stall_type
+          status_field: level
+          views: ["tree"]
+          position:
+            row: 0
+            col: 0
+            width: 100%
+            height: 60%
+          summary: "Hierarchical process and thread execution tree isolating stalled worker threads within pools."
+        - name: "Stall Incident Audit Stream"
+          type: stream
+          map_name: stall_events
+          inspect_payload: message
+          searchable_fields: [comm, stall_type, container_id, message]
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 40%
+          summary: "Chronological event log of all system stall anomalies."
+          columns:
+            - field: time
+              width: 10
+            - field: comm
+              width: 14
+              bold: true
+            - field: pid
+              width: 8
+            - field: tid
+              width: 8
+            - field: stall_type
+              width: 14
+              color: "#00F0FF"
+            - field: duration_us
+              width: 12
+            - field: runq_latency_us
+              width: 12
+            - field: container_id
+              width: 14
+            - field: level
+              width: 8
+              bold: true
+            - field: message
+              width: 50

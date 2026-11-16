@@ -1,0 +1,288 @@
+name: app/universal-tls-sniffer
+version: 1.0.8
+author: eprobe-core-team
+sha256: 60d60be099ad74511d8b74fc72fc6d10b6c1e4e6375d57b4d71bc4d5c68725fe
+description: "Universal user-space TLS plaintext sniffer attaching uprobes to OpenSSL (libssl.so) for real-time HTTP/1.1 and HTTP/2 decryption, full-duplex payload inspection, zero-proxy API debugging, and microservice call graph tracing without certificates."
+attach_points:
+  - type: uprobe
+    symbol: SSL_write
+    section: uprobe_SSL_write
+  - type: uprobe
+    symbol: SSL_write_ex
+    section: uprobe_SSL_write_ex
+  - type: uretprobe
+    symbol: SSL_write
+    section: uretprobe_SSL_write
+  - type: uretprobe
+    symbol: SSL_write_ex
+    section: uretprobe_SSL_write_ex
+  - type: uprobe
+    symbol: SSL_read
+    section: uprobe_SSL_read
+  - type: uprobe
+    symbol: SSL_read_ex
+    section: uprobe_SSL_read_ex
+  - type: uretprobe
+    symbol: SSL_read
+    section: uretprobe_SSL_read
+  - type: uretprobe
+    symbol: SSL_read_ex
+    section: uretprobe_SSL_read_ex
+  - type: uprobe
+    symbol: SSL_ctrl
+    section: uprobe_SSL_ctrl
+  - type: uprobe
+    symbol: SSL_set1_host
+    section: uprobe_SSL_set1_host
+  - type: uprobe
+    symbol: SSL_free
+    section: uprobe_SSL_free
+maps:
+  - name: tls_events
+    type: ringbuf
+    event_struct: tls_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: ppid
+        type: uint32
+      - name: tid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: container_id
+        type: string
+        length: 13
+        format: container_id
+      - name: role
+        type: string
+        length: 8
+      - name: method
+        type: string
+        length: 8
+      - name: path
+        type: string
+        length: 256
+      - name: host
+        type: string
+        length: 64
+      - name: status_code
+        type: uint16
+      - name: duration_us
+        type: uint64
+      - name: req_len
+        type: uint32
+      - name: resp_len
+        type: uint32
+      - name: req_payload
+        type: string
+        length: 256
+      - name: resp_payload
+        type: string
+        length: 256
+  - name: host_stats
+    type: hash
+    key_struct: host_key_t
+    key_schema:
+      - name: host
+        type: string
+        length: 64
+    value_struct: host_stat_t
+    value_schema:
+      - name: req_count
+        type: uint64
+  - name: status_stats
+    type: hash
+    key_struct: status_key_t
+    key_schema:
+      - name: status_code
+        type: uint32
+    value_struct: status_stat_t
+    value_schema:
+      - name: count
+        type: uint64
+variables:
+  - name: filter_port
+    type: uint16
+    cli_flag: port
+    description: "Filter HTTPS traffic by remote or local TCP port (0 for all)"
+  - name: filter_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter HTTPS traffic by process PID (0 for all)"
+  - name: filter_comm
+    type: string
+    cli_flag: comm
+    description: "Filter HTTPS traffic by process executable name (e.g. curl, python, nginx)"
+  - name: filter_host
+    type: string
+    cli_flag: host
+    description: "Filter HTTPS traffic by SNI or Host header substring (e.g. api.github.com)"
+  - name: filter_errors_only
+    type: uint8
+    cli_flag: errors-only
+    description: "Filter and stream only HTTP error responses (4xx and 5xx status codes)"
+  - name: slow_threshold_us
+    type: uint64
+    cli_flag: slow-us
+    description: "Slow TLS latency threshold in microseconds (default: 50000 = 50ms)"
+  - name: custom_libssl
+    type: string
+    cli_flag: libssl
+    description: "Explicit path to libssl.so binary (overrides automatic OS multi-distro discovery)"
+  - name: sanitize_credentials
+    type: bool
+    cli_flag: sanitize
+    description: "Mask Bearer tokens, API keys, and authorization headers (default: true; disable with --no-sanitize)"
+target_discovery:
+  candidates: ["curl", "python", "python3", "node", "ruby", "nginx", "envoy", "traefik", "caddy", "openssl"]
+  version_flags: ["-v", "-V", "--version"]
+tui_hints:
+  pages:
+    - name: "HTTPS RED Metrics & Traffic Overview"
+      panes:
+        - name: "HTTPS Request Throughput"
+          type: sparkline
+          map_name: tls_events
+          metric_field: "count"
+          aggregation: "rate"
+          time_window_sec: 60
+          unit: "qps"
+          position:
+            row: 0
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Real-time decrypted HTTPS request throughput rate (req/s)."
+        - name: "HTTPS TTFB Latency Distribution"
+          type: histogram
+          map_name: tls_events
+          histogram_field: "duration_us"
+          unit: "us"
+          buckets: [500, 2000, 10000, 50000, 200000, 1000000]
+          position:
+            row: 0
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Decrypted HTTPS round-trip Time To First Byte (TTFB) latency distribution in microseconds."
+        - name: "Top Remote API Destinations"
+          type: top
+          map_name: host_stats
+          inspect_payload: "host"
+          aggregate_by:
+            - field: host
+              label: "Requests"
+              type: value
+              value_field: req_count
+          position:
+            row: 1
+            col: 0
+            width: "50%"
+            height: "50%"
+          summary: "Top remote hosts and API domains ranked by total decrypted HTTPS request count."
+        - name: "HTTP Status Code Breakdown"
+          type: top
+          map_name: status_stats
+          inspect_payload: "status_code"
+          aggregate_by:
+            - field: status_code
+              label: "Responses"
+              type: value
+              value_field: count
+          position:
+            row: 1
+            col: 1
+            width: "50%"
+            height: "50%"
+          summary: "Decrypted HTTP response count distribution by status code (200, 301, 400, 404, 500, etc.)."
+    - name: "Live Decrypted Stream & Payload Console"
+      panes:
+        - name: "Top Accessed Endpoints"
+          type: top
+          map_name: tls_events
+          aggregate_by:
+            - field: path
+              label: "Calls"
+              type: count
+          position:
+            row: 0
+            col: 0
+            width: "100%"
+            height: "30%"
+          summary: "Most frequently called decrypted HTTPS request paths and URI endpoints."
+        - name: "Live Decrypted TLS Traffic Stream"
+          type: stream
+          map_name: tls_events
+          searchable_fields: [comm, host, path, method, status_code, container_id, role]
+          inspect_payload: "req_payload"
+          request_payload_field: "req_payload"
+          response_payload_field: "resp_payload"
+          status_field: "status_code"
+          position:
+            row: 1
+            col: 0
+            width: "100%"
+            height: "70%"
+          summary: "Real-time dual-payload stream of decrypted HTTPS requests and matching responses."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: container_id
+              width: 12
+            - field: comm
+              width: 14
+            - field: role
+              width: 8
+              color: "#00F0FF"
+            - field: method
+              width: 8
+              bold: true
+              color: "#FFA500"
+            - field: status_code
+              width: 8
+              bold: true
+              color: "#00FF66"
+            - field: duration_us
+              width: 12
+              color: "#FFA500"
+            - field: host
+              width: 24
+            - field: path
+              width: 40
+    - name: "Microservice Call Hierarchy & Latency"
+      panes:
+        - name: "Decrypted Call Hierarchy"
+          type: tree
+          map_name: tls_events
+          node_id: "pid"
+          parent_id: "ppid"
+          label_fields: [comm, host, path]
+          badge_field: "method"
+          status_field: "status_code"
+          duration_field: "duration_us"
+          views: ["tree", "graph", "timeline"]
+          request_payload_field: "req_payload"
+          response_payload_field: "resp_payload"
+          position:
+            row: 0
+            col: 0
+            width: "70%"
+            height: "100%"
+          summary: "Interactive hierarchical process tree correlating parent and child TLS requests across microservices."
+        - name: "Process Traffic Leaderboard"
+          type: top
+          map_name: tls_events
+          aggregate_by:
+            - field: comm
+              label: "Requests"
+              type: count
+          position:
+            row: 0
+            col: 1
+            width: "30%"
+            height: "100%"
+          summary: "Local process executables ranked by total outbound/inbound decrypted HTTPS volume."

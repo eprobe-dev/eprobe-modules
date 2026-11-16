@@ -1,0 +1,416 @@
+name: app/mysql-monitor
+version: 1.0.20
+author: eprobe-core-team
+description: "Comprehensive MySQL DBA observability: SQL query performance, microsecond latency histograms, deadlock & lock wait detection, InnoDB Block I/O, RED metrics, and worker thread CPU profiling"
+attach_points:
+  - type: tracepoint
+    symbol: syscalls/sys_enter_recvfrom
+    section: trace_sys_enter_recvfrom
+  - type: tracepoint
+    symbol: syscalls/sys_exit_recvfrom
+    section: trace_sys_exit_recvfrom
+  - type: tracepoint
+    symbol: syscalls/sys_enter_read
+    section: trace_sys_enter_read
+  - type: tracepoint
+    symbol: syscalls/sys_exit_read
+    section: trace_sys_exit_read
+  - type: tracepoint
+    symbol: syscalls/sys_enter_sendto
+    section: trace_sys_sendto
+  - type: tracepoint
+    symbol: syscalls/sys_enter_write
+    section: trace_sys_write
+  - type: tracepoint
+    symbol: syscalls/sys_enter_writev
+    section: trace_sys_writev
+  - type: kprobe
+    symbol: tcp_sendmsg
+    section: kprobe_tcp_sendmsg
+  - type: kprobe
+    symbol: tcp_recvmsg
+    section: kprobe_tcp_recvmsg
+  - type: tracepoint
+    symbol: sched/sched_stat_runtime
+    section: trace_sched_stat_runtime
+  - type: tracepoint
+    symbol: block/block_rq_issue
+    section: trace_block_rq_issue
+  - type: tracepoint
+    symbol: block/block_rq_complete
+    section: trace_block_rq_complete
+maps:
+  - name: sql_events
+    type: ringbuf
+    event_struct: sql_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: tid
+        type: uint32
+      - name: saddr
+        type: ipv4
+        format: ip
+      - name: daddr
+        type: ipv4
+        format: ip
+      - name: sport
+        type: uint16
+        format: port
+      - name: dport
+        type: uint16
+        format: port
+      - name: comm
+        type: string
+        length: 16
+      - name: cmd_type
+        type: string
+        length: 16
+      - name: sql_cmd
+        type: string
+        length: 16
+      - name: query
+        type: string
+        length: 512
+      - name: db_name
+        type: string
+        length: 32
+      - name: duration_us
+        type: uint64
+      - name: status_code
+        type: uint16
+      - name: affected_rows
+        type: uint32
+      - name: tx_bytes
+        type: uint32
+      - name: rx_bytes
+        type: uint32
+  - name: lock_events
+    type: ringbuf
+    event_struct: lock_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: saddr
+        type: ipv4
+        format: ip
+      - name: event_type
+        type: string
+        length: 16
+      - name: error_code
+        type: uint16
+      - name: duration_us
+        type: uint64
+      - name: query
+        type: string
+        length: 512
+      - name: message
+        type: string
+        length: 128
+  - name: log_events
+    type: ringbuf
+    event_struct: log_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: level
+        type: string
+        length: 8
+      - name: message
+        type: string
+        length: 256
+  - name: io_events
+    type: ringbuf
+    event_struct: io_event_t
+    event_schema:
+      - name: pid
+        type: uint32
+      - name: comm
+        type: string
+        length: 16
+      - name: rwflag
+        type: string
+        length: 8
+      - name: bytes
+        type: uint32
+      - name: latency_us
+        type: uint64
+  - name: cpu_stats
+    type: hash
+    key_struct: mysql_thread_key_t
+    key_schema:
+      - name: title
+        type: string
+        length: 64
+    value_struct: cpu_stat_t
+    value_schema:
+      - name: cpu_time_ns
+        type: uint64
+  - name: io_stats
+    type: hash
+    key_struct: mysql_io_key_t
+    key_schema:
+      - name: comm
+        type: string
+        length: 16
+    value_struct: io_stat_t
+    value_schema:
+      - name: read_bytes
+        type: uint64
+      - name: write_bytes
+        type: uint64
+variables:
+  - name: filter_port
+    type: uint16
+    cli_flag: port
+    description: "Filter MySQL events by target port (0 for all, default: 3306)"
+  - name: filter_pid
+    type: uint32
+    cli_flag: pid
+    description: "Filter MySQL events by process PID (0 for all)"
+  - name: slow_query_us
+    type: uint64
+    cli_flag: slow-us
+    description: "Threshold in microseconds to trigger slow query alerts (default: 10000 = 10ms)"
+target_discovery:
+  candidates: ["mysqld", "mariadbd"]
+  version_flags: ["--version", "-v", "-V"]
+tui_hints:
+  pages:
+    - name: "MySQL RED Overview & QPS"
+      layout: grid
+      panes:
+        - name: "MySQL QPS Throughput"
+          type: sparkline
+          map_name: sql_events
+          metric_field: count
+          aggregation: rate
+          time_window_sec: 60
+          unit: qps
+          position:
+            row: 0
+            col: 0
+            width: 50%
+            height: 50%
+          summary: "Real-time MySQL query throughput (Queries Per Second)."
+        - name: "Query Latency Distribution"
+          type: histogram
+          map_name: sql_events
+          histogram_field: duration_us
+          unit: us
+          buckets: [100, 500, 1000, 5000, 20000, 100000]
+          position:
+            row: 0
+            col: 1
+            width: 50%
+            height: 50%
+          summary: "Histogram of SQL execution duration in microseconds."
+        - name: "SQL Command Breakdown"
+          type: top
+          map_name: sql_events
+          aggregate_by:
+            - field: sql_cmd
+              label: Commands
+              type: count
+          position:
+            row: 1
+            col: 0
+            width: 50%
+            height: 50%
+          summary: "SQL query statement frequency (SELECT, INSERT, UPDATE, DELETE, COMMIT, etc.)."
+        - name: "Top Active Databases"
+          type: top
+          map_name: sql_events
+          aggregate_by:
+            - field: db_name
+              label: Queries
+              type: count
+          position:
+            row: 1
+            col: 1
+            width: 50%
+            height: 50%
+          summary: "Most active database schemas by query volume."
+    - name: "Live SQL Query Stream & Analytics"
+      layout: grid
+      panes:
+        - name: "Top Slowest Queries"
+          type: top
+          map_name: sql_events
+          inspect_payload: query
+          aggregate_by:
+            - field: query
+              label: Executions
+              type: count
+          position:
+            row: 0
+            col: 0
+            width: 100%
+            height: 40%
+          summary: "Aggregated query leaderboard (Click any statement to inspect full multi-line SQL)."
+        - name: "Live SQL Stream"
+          type: stream
+          map_name: sql_events
+          inspect_payload: query
+          request_payload_field: query
+          proto_field: sql_cmd
+          searchable_fields: [query, db_name, sql_cmd, comm, saddr]
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 60%
+          summary: "Real-time SQL query execution stream with microsecond duration and status."
+          columns:
+            - field: time
+              width: 10
+            - field: db_name
+              width: 12
+            - field: sql_cmd
+              width: 10
+              bold: true
+              color: "#00F0FF"
+            - field: duration_us
+              width: 12
+            - field: query
+    - name: "Transactions, Locks & Deadlocks"
+      layout: grid
+      panes:
+        - name: "Deadlock & Lock Timeout Alerts"
+          type: stream
+          map_name: lock_events
+          inspect_payload: query
+          request_payload_field: query
+          response_payload_field: message
+          searchable_fields: [event_type, query, message, saddr]
+          position:
+            row: 0
+            col: 0
+            width: 70%
+            height: 100%
+          summary: "Real-time alerts for Deadlocks (1213), Lock Timeouts (1205), Duplicate Keys (1062), and Rollbacks."
+          columns:
+            - field: time
+              width: 10
+            - field: event_type
+              width: 14
+              bold: true
+              color: "#FF007F"
+            - field: error_code
+              width: 8
+            - field: duration_us
+              width: 12
+            - field: message
+              width: 25
+            - field: query
+        - name: "Transaction Command Breakdown"
+          type: top
+          map_name: sql_events
+          aggregate_by:
+            - field: cmd_type
+              label: Transactions
+              type: count
+          position:
+            row: 0
+            col: 1
+            width: 30%
+            height: 100%
+          summary: "Breakdown of transaction and session control commands (COMMIT, ROLLBACK, START, PREPARE)."
+    - name: "InnoDB Storage & Block I/O"
+      layout: grid
+      panes:
+        - name: "Top Disk I/O MySQL Threads"
+          type: top
+          map_name: io_stats
+          inspect_payload: comm
+          aggregate_by:
+            - field: comm
+              label: "Read B/s"
+              type: delta_rate
+              value_field: read_bytes
+            - field: comm
+              label: "Write B/s"
+              type: delta_rate
+              value_field: write_bytes
+          position:
+            row: 0
+            col: 0
+            width: 50%
+            height: 50%
+          summary: "MySQL worker and engine threads ranked by disk I/O throughput rate."
+        - name: "Block I/O Latency Distribution"
+          type: histogram
+          map_name: io_events
+          histogram_field: latency_us
+          unit: us
+          buckets: [100, 500, 2000, 10000, 50000]
+          position:
+            row: 0
+            col: 1
+            width: 50%
+            height: 50%
+          summary: "Distribution of disk I/O request response times in microseconds."
+        - name: "InnoDB Storage Operations Stream"
+          type: stream
+          map_name: io_events
+          searchable_fields: [comm, rwflag]
+          position:
+            row: 1
+            col: 0
+            width: 100%
+            height: 50%
+          summary: "Real-time block storage operations stream for tablespaces and redo logs."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: comm
+              width: 15
+            - field: rwflag
+              width: 8
+            - field: bytes
+              width: 10
+            - field: latency_us
+              width: 12
+              color: "#00F0FF"
+    - name: "Server Logs & CPU Profiling"
+      layout: grid
+      panes:
+        - name: "Top CPU Consuming MySQL Threads"
+          type: top
+          map_name: cpu_stats
+          inspect_payload: title
+          aggregate_by:
+            - field: title
+              label: "CPU %"
+              type: delta_rate
+              value_field: cpu_time_ns
+          position:
+            row: 0
+            col: 0
+            width: 40%
+            height: 100%
+          summary: "MySQL worker and engine threads ranked by CPU utilization."
+        - name: "mysqld Server Diagnostic Logs"
+          type: stream
+          map_name: log_events
+          searchable_fields: [message, level]
+          position:
+            row: 0
+            col: 1
+            width: 60%
+            height: 100%
+          summary: "mysqld error, warning, and diagnostic log stream intercepted from stderr and log files."
+          columns:
+            - field: time
+              width: 10
+            - field: pid
+              width: 8
+            - field: level
+              width: 8
+              bold: true
+              color: "#FF007F"
+            - field: message
+              width: 100
+sha256: e7145cdb8cd53b08aa1391d9269824b99461361f787fe44b4278bb30e9aa2ec3

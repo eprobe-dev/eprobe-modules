@@ -1,0 +1,16 @@
+# Compiled Go binaries
+eprobe-pack
+
+# Packaging outputs
+registry-data/
+dist/
+*.epm
+
+# eBPF compiled objects
+*.o
+
+# Log files
+*.log
+
+# OS generated files
+.DS_Store
