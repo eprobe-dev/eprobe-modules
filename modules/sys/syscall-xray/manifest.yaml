@@ -1,7 +1,7 @@
 name: sys/syscall-xray
-version: 1.0.1
+version: 1.0.2
 author: eprobe-core-team
-sha256: 3883530f6475e933565180c86e6577d38c639ec34e1568116ab4f1146dba3ddb
+sha256: 81346abc928fbc5ab4a4827cf8f8f4428946fe319d5babc153771b8d1681c494
 description: "Low-overhead eBPF syscall X-Ray replacing strace in production: captures ENOENT/EACCES/ECONNREFUSED/ETIMEDOUT syscall failures, file paths (openat/openat2), IPv4/IPv6/UNIX socket connect targets, and cumulative per-syscall call counts, errors, and nanoseconds."
 attach_points:
   - type: tracepoint
@@ -85,6 +85,17 @@ maps:
         type: uint64
       - name: error_count
         type: uint64
+  - name: errno_stats
+    type: hash
+    key_struct: errno_stat_key_t
+    key_schema:
+      - name: errno_name
+        type: string
+        length: 16
+    value_struct: errno_stat_t
+    value_schema:
+      - name: error_count
+        type: uint64
 variables:
   - name: filter_pid
     type: uint32
@@ -101,7 +112,7 @@ variables:
   - name: include_transient
     type: uint8
     cli_flag: include-transient
-    description: "Include transient EAGAIN/EINPROGRESS errors in the discrete event stream (1: enabled, 0: disabled)"
+    description: "Include transient EAGAIN/EINPROGRESS and timed-wait ETIMEDOUT/EINTR exits in error streams (1: enabled, 0: disabled)"
 tui_hints:
   pages:
     - name: "Syscall Failure & Slow Stream"
@@ -219,15 +230,15 @@ tui_hints:
           summary: "Syscalls ranked by cumulative non-zero errno failures."
         - name: "Top Failing Error Codes"
           type: top
-          map_name: syscall_events
-          inspect_payload: target
+          map_name: errno_stats
           aggregate_by:
             - field: errno_name
               label: "Failures"
-              type: count
+              type: value
+              value_field: error_count
           position:
             row: 1
             col: 0
             width: 100%
             height: 45%
-          summary: "Breakdown of observed errno failures (ENOENT, EACCES, ECONNREFUSED, ETIMEDOUT)."
+          summary: "In-kernel count of real non-zero syscall errno failures (ENOENT, EACCES, ECONNREFUSED, ETIMEDOUT), excluding OK slow calls."
