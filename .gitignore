@@ -1,5 +1,5 @@
 # Compiled Go binaries
-eprobe-pack
+/eprobe-pack
 
 # Packaging outputs
 registry-data/
