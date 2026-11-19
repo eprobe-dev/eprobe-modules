@@ -322,8 +322,10 @@ static __always_inline void extract_http_host(const char *buf, char *host_out) {
 
 static __always_inline void extract_payload(const char *buf, u32 len, char *payload_out) {
     u32 rlen = len < 256 ? len : 255;
-    rlen &= 0xFF;
     __builtin_memcpy(payload_out, buf, 256);
+    // Prevent Clang -O2 from folding away the 0xff mask as redundant after the ternary above,
+    // which otherwise lets the Linux 6.8+ BPF verifier lose the <256 bound across register spills.
+    asm volatile("%0 &= 0xff" : "+r"(rlen));
     payload_out[rlen] = '\0';
 }
 

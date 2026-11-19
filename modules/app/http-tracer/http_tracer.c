@@ -443,8 +443,8 @@ static __always_inline int process_http_request(u32 pid, u32 ppid, const char *c
 
     // 3. Raw request payload capture
     u32 rlen = (len < sizeof(req->req_payload)) ? len : sizeof(req->req_payload) - 1;
-    rlen &= 0xFF;
     bpf_probe_read_user(req->req_payload, sizeof(req->req_payload), buf_user);
+    asm volatile("%0 &= 0xff" : "+r"(rlen));
     req->req_payload[rlen] = '\0';
 
     // 4. Update host_stats hash map
@@ -529,9 +529,9 @@ static __always_inline int process_http_response(u32 pid, u32 ppid, const char *
     const char *resp_src = (body_user && body_len > 0) ? body_user : buf_user;
     u32 rlen = (body_user && body_len > 0) ? body_len : len;
     u32 blen = (rlen < sizeof(e->resp_payload)) ? rlen : sizeof(e->resp_payload) - 1;
-    blen &= 0xFF;
     if (resp_src) {
         bpf_probe_read_user(e->resp_payload, sizeof(e->resp_payload), resp_src);
+        asm volatile("%0 &= 0xff" : "+r"(blen));
         e->resp_payload[blen] = '\0';
     }
 

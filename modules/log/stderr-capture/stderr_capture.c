@@ -154,6 +154,7 @@ static __always_inline int process_stderr(const void *buf, u32 count) {
         bpf_ringbuf_discard(e, 0);
         return 0;
     }
+    asm volatile("%0 &= 0xff" : "+r"(read_bytes));
     e->payload[read_bytes] = '\0';
 
     if (is_noise_fragment(e->payload, read_bytes)) {

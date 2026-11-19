@@ -1,7 +1,7 @@
 name: log/stderr-capture
 version: 1.1.2
 author: eprobe-core-team
-sha256: 3c33e8a2753e7097775d5b7048cee615b0c6dac3a9d3168ce44a2255cf298e12
+sha256: 378572ce515564b96469cf7b6bc30ef5ce347fcd353ca859ba80ce4926138860
 description: "System-Wide Host & Container Error Diagnostic Sink: intercepts raw stderr (fd 2) and vectorized writev error output across bare-metal systemd services, CLI utilities, and container runtimes, isolating crashing daemons, error bursts, and unexpected stack traces."
 attach_points:
   - type: tracepoint
