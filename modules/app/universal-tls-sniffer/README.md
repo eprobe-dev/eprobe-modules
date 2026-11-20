@@ -12,7 +12,7 @@ The **`app/universal-tls-sniffer`** module is an ephemeral, tactical eBPF incide
   - **The Encrypted Packet Dump Firehose**: `tcpdump` captures gigabytes of encrypted traffic, but cannot inspect HTTP status codes, request paths, or JSON payloads without decrypting session keys.
   - **Certificate Pinning Conflicts**: Installing corporate proxy certificates breaks applications enforcing strict certificate pinning or mTLS; `universal-tls-sniffer` captures payloads *after* local decryption inside user-space memory, bypassing certificate requirements completely.
   - **API Contract Failures**: Upstream payment gateways or microservices return unhandled errors; `universal-tls-sniffer` extracts side-by-side request and response bodies while automatically masking secret authentication headers.
-* **Overhead Profile**: Dynamic uprobes hook `SSL_write` and `SSL_read` functions. Utilizes per-CPU scratch maps to stay within 512-byte stack limits, and bounds string scans with bitwise masking (`count &= 0x1FF`). Maintains `<1%` CPU utilization. Clean detach with `Ctrl+C` leaves zero host sidecars or background agents behind.
+* **Overhead Profile**: Dynamic uprobes hook `SSL_write` and `SSL_read` functions. Utilizes per-CPU scratch maps to stay within 512-byte stack limits, and clamps payload reads with verifier-safe bitwise bounds (`0xFFF`). Maintains `<1%` CPU utilization. Clean detach with `Ctrl+C` leaves zero host sidecars or background agents behind.
 
 ---
 
@@ -26,7 +26,7 @@ The **`app/universal-tls-sniffer`** module is an ephemeral, tactical eBPF incide
 ### 2. Full-Duplex Request & Response Correlation
 - **Bidirectional In-Flight Matching**: Matches outbound HTTP requests with incoming server responses across thread and process boundaries using in-kernel tracking maps (`inflight_reqs` and `active_reads`).
 - **TTFB & Round-Trip Latency**: Measures precise Time To First Byte (TTFB) and total server processing latency in microseconds (`duration_us`).
-- **Dual Payload Inspection**: Emits both the original client request payload (`req_payload`, up to 256 bytes) and server response body (`resp_payload`, up to 256 bytes) side-by-side in a single correlated event record.
+- **Dual Payload Inspection**: Emits both the original client request payload (`req_payload`, up to 1024 bytes) and server response body (`resp_payload`, up to 4096 bytes) side-by-side in a single correlated event record.
 
 ### 3. Credential Sanitization by Default
 - **Automatic Secret Masking**: Enabled by default to protect credentials, masking `Bearer <token>`, `Basic <token>`, API keys (`api_key=...`, `key=...`), and authorization headers with `Bearer **********`.

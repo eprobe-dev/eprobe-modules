@@ -43,6 +43,10 @@ struct task_struct___local {
     char comm[16];
 } __attribute__((preserve_access_index));
 
+#define REQ_PAYLOAD_MAX  1024
+#define RESP_PAYLOAD_MAX 4096
+#define SCRATCH_BUF_MAX  4096
+
 // Exported event schemas matching manifest.yaml
 struct tls_event_t {
     u32 pid;
@@ -58,8 +62,8 @@ struct tls_event_t {
     u64 duration_us;
     u32 req_len;
     u32 resp_len;
-    char req_payload[256];
-    char resp_payload[256];
+    char req_payload[REQ_PAYLOAD_MAX];
+    char resp_payload[RESP_PAYLOAD_MAX];
 } __attribute__((packed));
 
 struct host_key_t {
@@ -89,7 +93,7 @@ struct in_flight_tls_t {
     char method[8];
     char path[256];
     char host[64];
-    char req_payload[256];
+    char req_payload[REQ_PAYLOAD_MAX];
     u32 req_len;
 };
 
@@ -107,7 +111,7 @@ struct active_read_t {
 };
 
 struct scratch_t {
-    char buf[512];
+    char buf[SCRATCH_BUF_MAX];
     struct in_flight_tls_t inflight;
 };
 
@@ -320,12 +324,27 @@ static __always_inline void extract_http_host(const char *buf, char *host_out) {
     host_out[31] = '\0';
 }
 
-static __always_inline void extract_payload(const char *buf, u32 len, char *payload_out) {
-    u32 rlen = len < 256 ? len : 255;
-    __builtin_memcpy(payload_out, buf, 256);
-    // Prevent Clang -O2 from folding away the 0xff mask as redundant after the ternary above,
-    // which otherwise lets the Linux 6.8+ BPF verifier lose the <256 bound across register spills.
-    asm volatile("%0 &= 0xff" : "+r"(rlen));
+static __always_inline void extract_req_payload(const char *buf, u32 len, char *payload_out) {
+    u32 rlen = len < REQ_PAYLOAD_MAX ? len : (REQ_PAYLOAD_MAX - 1);
+    // Prevent Clang -O2 from folding away the bounds mask as redundant after the ternary above,
+    // which otherwise lets the Linux 6.8+ BPF verifier lose the <REQ_PAYLOAD_MAX bound across spills.
+    asm volatile("%0 &= 0x3ff" : "+r"(rlen));
+    if (rlen > 0) {
+        bpf_probe_read_kernel(payload_out, rlen, buf);
+    }
+    asm volatile("%0 &= 0x3ff" : "+r"(rlen));
+    payload_out[rlen] = '\0';
+}
+
+static __always_inline void extract_resp_payload(const char *buf, u32 len, char *payload_out) {
+    u32 rlen = len < RESP_PAYLOAD_MAX ? len : (RESP_PAYLOAD_MAX - 1);
+    // Prevent Clang -O2 from folding away the bounds mask as redundant after the ternary above,
+    // which otherwise lets the Linux 6.8+ BPF verifier lose the <RESP_PAYLOAD_MAX bound across spills.
+    asm volatile("%0 &= 0xfff" : "+r"(rlen));
+    if (rlen > 0) {
+        bpf_probe_read_kernel(payload_out, rlen, buf);
+    }
+    asm volatile("%0 &= 0xfff" : "+r"(rlen));
     payload_out[rlen] = '\0';
 }
 
@@ -434,9 +453,13 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
         bpf_map_update_elem(&active_writes, &pid_tgid, &one, BPF_ANY);
     }
 
-    // Enforce verifier scalar bounds mathematically
-    num &= 0x1FF;
     if (num < 4)
+        return 0;
+
+    u32 orig_len = num;
+    u32 read_bytes = num < SCRATCH_BUF_MAX ? num : (SCRATCH_BUF_MAX - 1);
+    asm volatile("%0 &= 0xfff" : "+r"(read_bytes));
+    if (read_bytes < 4)
         return 0;
 
     u32 zero = 0;
@@ -445,11 +468,10 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
         return 0;
 
     // Read payload from userspace buffer
-    u32 read_bytes = num < sizeof(scratch->buf) ? num : (sizeof(scratch->buf) - 1);
-    read_bytes &= 0x1FF;
     if (bpf_probe_read_user(scratch->buf, read_bytes, user_buf) < 0)
         return 0;
-    scratch->buf[read_bytes & 0x1FF] = '\0';
+    asm volatile("%0 &= 0xfff" : "+r"(read_bytes));
+    scratch->buf[read_bytes] = '\0';
 
     // Case A: Outgoing Client Request (HTTP/1.1 or HTTP/2)
     struct in_flight_tls_t *req = &scratch->inflight;
@@ -470,8 +492,8 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
     } else if (read_bytes >= 9 && (u8)scratch->buf[3] == 0x00) {
         // HTTP/2 DATA frame: update payload of existing in-flight request
         struct in_flight_tls_t *existing = bpf_map_lookup_elem(&inflight_reqs, &pid_tgid);
-        if (existing && num > 9) {
-            extract_payload(&scratch->buf[9], num - 9, existing->req_payload);
+        if (existing && read_bytes > 9) {
+            extract_req_payload(&scratch->buf[9], read_bytes - 9, existing->req_payload);
         }
         return 0;
     }
@@ -481,7 +503,7 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
         req->pid = pid;
         req->ppid = 0;
         req->tid = tid;
-        req->req_len = num;
+        req->req_len = orig_len;
         copy_str(req->comm, comm, sizeof(req->comm));
         copy_str(req->role, "CLIENT", sizeof(req->role));
         get_container_id(req->container_id, sizeof(req->container_id));
@@ -510,14 +532,14 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
             bpf_map_update_elem(&host_stats, &hkey, &init_stat, BPF_ANY);
         }
 
-        extract_payload(scratch->buf, num, req->req_payload);
+        extract_req_payload(scratch->buf, read_bytes, req->req_payload);
         bpf_map_update_elem(&inflight_reqs, &pid_tgid, req, BPF_ANY);
         return 0;
     }
 
     // Case B: HTTP/1.1 Response from Local Server (Server Outbound Flow)
     if (scratch->buf[0] == 'H' && scratch->buf[1] == 'T' && scratch->buf[2] == 'T' && scratch->buf[3] == 'P') {
-        u16 status = parse_http_status(scratch->buf, num);
+        u16 status = parse_http_status(scratch->buf, read_bytes);
         if (status > 0) {
             struct in_flight_tls_t *sreq = bpf_map_lookup_elem(&inflight_reqs, &pid_tgid);
             u64 duration_us = 0;
@@ -538,7 +560,7 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
                 e->tid = tid;
                 e->status_code = status;
                 e->duration_us = duration_us;
-                e->resp_len = num;
+                e->resp_len = orig_len;
                 copy_str(e->comm, comm, sizeof(e->comm));
                 copy_str(e->role, "SERVER", sizeof(e->role));
                 get_container_id(e->container_id, sizeof(e->container_id));
@@ -548,7 +570,7 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
                     copy_str(e->method, sreq->method, sizeof(e->method));
                     __builtin_memcpy(e->path, sreq->path, sizeof(e->path));
                     __builtin_memcpy(e->host, sreq->host, sizeof(e->host));
-                    __builtin_memcpy(e->req_payload, sreq->req_payload, sizeof(e->req_payload));
+                    bpf_probe_read_kernel(e->req_payload, sizeof(e->req_payload), sreq->req_payload);
                 } else {
                     e->req_len = 0;
                     copy_str(e->method, "HTTP", 5);
@@ -557,7 +579,7 @@ static __always_inline int handle_ssl_write_entry(struct pt_regs *ctx, const cha
                     e->req_payload[0] = '\0';
                 }
 
-                extract_payload(scratch->buf, num, e->resp_payload);
+                extract_resp_payload(scratch->buf, read_bytes, e->resp_payload);
                 bpf_ringbuf_submit(e, 0);
             }
 
@@ -751,8 +773,11 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
     if (!scratch)
         return 0;
 
-    u32 read_bytes = ret_bytes;
-    read_bytes &= 0x1FF;
+    if (ret_bytes < 4)
+        return 0;
+
+    u32 read_bytes = ret_bytes < SCRATCH_BUF_MAX ? ret_bytes : (SCRATCH_BUF_MAX - 1);
+    asm volatile("%0 &= 0xfff" : "+r"(read_bytes));
     if (read_bytes < 4)
         return 0;
 
@@ -761,9 +786,10 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
         scratch->buf[i] = '\0';
     }
 
-    if (bpf_probe_read_user(scratch->buf, read_bytes < sizeof(scratch->buf) ? read_bytes : (sizeof(scratch->buf) - 1), user_buf) < 0)
+    if (bpf_probe_read_user(scratch->buf, read_bytes, user_buf) < 0)
         return 0;
-    scratch->buf[read_bytes & 0x1FF] = '\0';
+    asm volatile("%0 &= 0xfff" : "+r"(read_bytes));
+    scratch->buf[read_bytes] = '\0';
 
     // Case 1: Incoming HTTP Response from Remote API Endpoint (Client Outbound Flow)
     u16 status = 0;
@@ -793,7 +819,7 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
             e->tid = tid;
             e->status_code = status;
             e->duration_us = duration_us;
-            e->resp_len = read_bytes;
+            e->resp_len = ret_bytes;
             copy_str(e->comm, comm, sizeof(e->comm));
             copy_str(e->role, "CLIENT", sizeof(e->role));
             get_container_id(e->container_id, sizeof(e->container_id));
@@ -803,7 +829,7 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
                 copy_str(e->method, req->method, sizeof(e->method));
                 __builtin_memcpy(e->path, req->path, sizeof(e->path));
                 __builtin_memcpy(e->host, req->host, sizeof(e->host));
-                __builtin_memcpy(e->req_payload, req->req_payload, sizeof(e->req_payload));
+                bpf_probe_read_kernel(e->req_payload, sizeof(e->req_payload), req->req_payload);
             } else {
                 e->req_len = 0;
                 copy_str(e->method, "HTTP", 5);
@@ -814,9 +840,9 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
 
             // Extract Response Body (Zero-Loop Direct Capture)
             if ((u8)scratch->buf[3] == 0x00 && read_bytes > 9) {
-                extract_payload(&scratch->buf[9], read_bytes - 9, e->resp_payload);
+                extract_resp_payload(&scratch->buf[9], read_bytes - 9, e->resp_payload);
             } else {
-                extract_payload(scratch->buf, read_bytes, e->resp_payload);
+                extract_resp_payload(scratch->buf, read_bytes, e->resp_payload);
             }
 
             bpf_ringbuf_submit(e, 0);
@@ -845,7 +871,7 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
         req->pid = pid;
         req->ppid = 0;
         req->tid = tid;
-        req->req_len = read_bytes;
+        req->req_len = ret_bytes;
         copy_str(req->comm, comm, sizeof(req->comm));
         copy_str(req->role, "SERVER", sizeof(req->role));
         copy_str(req->method, method, sizeof(req->method));
@@ -863,7 +889,7 @@ static __always_inline int handle_ssl_read_return(struct pt_regs *ctx, int ret, 
                 copy_str(req->host, hval->host, sizeof(req->host));
             }
         }
-        extract_payload(scratch->buf, read_bytes, req->req_payload);
+        extract_req_payload(scratch->buf, read_bytes, req->req_payload);
 
         bpf_map_update_elem(&inflight_reqs, &pid_tgid, req, BPF_ANY);
     }

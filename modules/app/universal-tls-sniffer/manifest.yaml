@@ -1,7 +1,7 @@
 name: app/universal-tls-sniffer
 version: 1.0.8
 author: eprobe-core-team
-sha256: 7ae490918dbfdde092975c6f0f3712e91a1aac1b1d9ef7c4adbeaa9466297255
+sha256: 00b7bb4893555df1a77d4dab7411a22fec839557e4e85eb203d8eb27c52372df
 description: "Universal user-space TLS plaintext sniffer attaching uprobes to OpenSSL (libssl.so) for real-time HTTP/1.1 and HTTP/2 decryption, full-duplex payload inspection, zero-proxy API debugging, and microservice call graph tracing without certificates."
 attach_points:
   - type: uprobe
@@ -77,10 +77,10 @@ maps:
         type: uint32
       - name: req_payload
         type: string
-        length: 256
+        length: 1024
       - name: resp_payload
         type: string
-        length: 256
+        length: 4096
   - name: host_stats
     type: hash
     key_struct: host_key_t
